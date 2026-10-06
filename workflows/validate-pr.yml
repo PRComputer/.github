@@ -1,0 +1,277 @@
+name: Validate PR
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+
+jobs:
+  validate-pr:
+    name: Validate PR Template
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate PR body
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import os
+          import re
+          import sys
+
+          body = os.environ.get("PR_BODY", "")
+
+          errors = []
+
+          def fail(message):
+              errors.append(message)
+              print(f"::error::{message}")
+
+          # Normalize line endings
+          body = body.replace("\r\n", "\n").replace("\r", "\n")
+
+          # --------------------------------------------------
+          # Extract markdown section
+          # --------------------------------------------------
+          def get_section(title):
+              pattern = rf"(?ims)^[ \t]*##[ \t]+{re.escape(title)}[ \t]*$\n(.*?)(?=^[ \t]*##[ \t]+|\Z)"
+              match = re.search(pattern, body)
+
+              if not match:
+                  return ""
+
+              return match.group(1).strip()
+
+          def checked_items(section):
+              return re.findall(
+                  r"(?im)^[ \t]*-?[ \t]*\[[xX]\][ \t]+.+$",
+                  section
+              )
+
+          def all_checkboxes(section):
+              return re.findall(
+                  r"(?im)^[ \t]*-?[ \t]*\[[ xX]\][ \t]+.+$",
+                  section
+              )
+
+          print("Validating pull request template...")
+
+          # --------------------------------------------------
+          # PR Body
+          # --------------------------------------------------
+
+          if not body.strip():
+              fail("Pull request description is required.")
+
+          # --------------------------------------------------
+          # Related task
+          # Task code OR Reference link required
+          # --------------------------------------------------
+
+          related_task = get_section("Related task")
+
+          task_code_match = re.search(
+              r"(?im)^[ \t]*Task code:[ \t]*(.+?)[ \t]*$",
+              related_task
+          )
+
+          reference_match = re.search(
+              r"(?im)^[ \t]*Reference link:[ \t]*(.+?)[ \t]*$",
+              related_task
+          )
+
+          task_code = (
+              task_code_match.group(1).strip()
+              if task_code_match
+              else ""
+          )
+
+          reference_link = (
+              reference_match.group(1).strip()
+              if reference_match
+              else ""
+          )
+
+          if not task_code and not reference_link:
+              fail(
+                  "'Related task' must include a Task code "
+                  "or Reference link."
+              )
+
+          # --------------------------------------------------
+          # Summary
+          # --------------------------------------------------
+
+          summary = get_section("Summary")
+
+          summary = re.sub(
+              r"(?im)^[ \t]*What changed and why\?[ \t]*$",
+              "",
+              summary
+          ).strip()
+
+          if not summary:
+              fail("'Summary' is required.")
+
+          # --------------------------------------------------
+          # Main changes
+          # At least one required
+          # --------------------------------------------------
+
+          main_changes = get_section("Main changes")
+
+          if not checked_items(main_changes):
+              fail(
+                  "Select at least one option in 'Main changes'."
+              )
+
+          # --------------------------------------------------
+          # Affected components
+          # At least one required
+          # --------------------------------------------------
+
+          affected_components = get_section("Affected components")
+
+          if not checked_items(affected_components):
+              fail(
+                  "Select at least one option in "
+                  "'Affected components'."
+              )
+
+          # --------------------------------------------------
+          # Files changed
+          # At least one real row
+          # --------------------------------------------------
+
+          files_changed = get_section("Files changed")
+
+          real_rows = []
+
+          for line in files_changed.splitlines():
+              line = line.strip()
+
+              if not line.startswith("|"):
+                  continue
+
+              # Ignore header
+              if re.match(
+                  r"^\|\s*File\s*\|\s*Change\s*\|?$",
+                  line,
+                  re.IGNORECASE
+              ):
+                  continue
+
+              # Ignore separator row
+              if re.match(
+                  r"^\|[\s\-:|]+\|?$",
+                  line
+              ):
+                  continue
+
+              # Ignore original examples
+              if "path/to/file.py" in line:
+                  continue
+
+              if "path/to/file.xml" in line:
+                  continue
+
+              real_rows.append(line)
+
+          if not real_rows:
+              fail(
+                  "'Files changed' must contain at least "
+                  "one real file entry."
+              )
+
+          # --------------------------------------------------
+          # Expected behavior
+          # --------------------------------------------------
+
+          expected_behavior = get_section("Expected behavior")
+
+          placeholder = (
+              "Describe the expected functional result of the "
+              "change or the visible impact to the business/user:"
+          )
+
+          expected_behavior = expected_behavior.replace(
+              placeholder,
+              ""
+          ).strip()
+
+          if not expected_behavior:
+              fail("'Expected behavior' is required.")
+
+          # --------------------------------------------------
+          # Change risk
+          # At least one required
+          # --------------------------------------------------
+
+          change_risk = get_section("Change risk")
+
+          if not checked_items(change_risk):
+              fail("Select a value in 'Change risk'.")
+
+          # --------------------------------------------------
+          # Test plan
+          # OPTIONAL
+          # --------------------------------------------------
+
+          # No validation
+
+          # --------------------------------------------------
+          # Verification performed
+          # OPTIONAL
+          # --------------------------------------------------
+
+          # No validation
+
+          # --------------------------------------------------
+          # Validation
+          # OPTIONAL
+          # --------------------------------------------------
+
+          # No validation
+
+          # --------------------------------------------------
+          # Minimum checklist
+          # ALL items required
+          # --------------------------------------------------
+
+          minimum_checklist = get_section("Minimum checklist")
+
+          total = all_checkboxes(minimum_checklist)
+          checked = checked_items(minimum_checklist)
+
+          if not total:
+              fail(
+                  "'Minimum checklist' is missing or "
+                  "contains no checklist items."
+              )
+
+          elif len(checked) != len(total):
+              fail(
+                  "All items in 'Minimum checklist' "
+                  "must be checked."
+              )
+
+          # --------------------------------------------------
+          # Result
+          # --------------------------------------------------
+
+          if errors:
+              print()
+              print(
+                  f"PR validation failed with "
+                  f"{len(errors)} error(s)."
+              )
+              sys.exit(1)
+
+          print()
+          print("PR validation completed successfully.")
+          PY
